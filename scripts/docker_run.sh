@@ -56,12 +56,26 @@ if [[ ! -d "$OUT_DIR_HOST" ]]; then
   mkdir -p "$OUT_DIR_HOST"
 fi
 
+GEM5_ARGS="--arm-iset aarch64 --cpu-type=AtomicSimpleCPU -n 1 --fastmem --mem-type=SimpleMemory --mem-size=2GB"
+
 echo "[host] PWD: $(pwd)"
 echo "[host] ROOT: $ROOT"
-echo "[host] docker image: $docker_image"
 echo "[host] binary: $BIN_HOST"
 echo "[host] config: $CFG_HOST"
 echo "[host] output dir: $OUT_DIR_HOST"
+
+# Inside the tutorial image, gem5 is installed natively as gem5-alpine
+if command -v gem5-alpine >/dev/null 2>&1; then
+  echo "[host] Exec: gem5-alpine $CFG_HOST -c $BIN_HOST"
+  cd "$ROOT"
+  PYTHONPATH="$ROOT/third-party/ALPINE/gem5-X-ALPINE/configs" \
+    exec gem5-alpine "$CFG_HOST" $GEM5_ARGS \
+      --output="$OUT_DIR_HOST/program.out" \
+      -c "$BIN_HOST"
+fi
+
+command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
+echo "[host] docker image: $docker_image"
 # When running inside a container with a forwarded Docker socket, volume paths
 # are resolved on the host. Use CINNAMON_HOST_PATH if set.
 host_root="${CINNAMON_HOST_PATH:-$ROOT}"
@@ -74,10 +88,7 @@ docker run --rm \
   "$docker_image" /bin/sh -eu -c "
     echo '[docker] PWD:' \\$(pwd)
     echo '[docker] Exec: $GEM5_BIN_C $SE_CFG_C -c $BIN_C'
-    exec $GEM5_BIN_C $SE_CFG_C \
-      --arm-iset aarch64 \
-      --cpu-type=AtomicSimpleCPU -n 1 --fastmem \
-      --mem-type=SimpleMemory --mem-size=2GB \
+    exec $GEM5_BIN_C $SE_CFG_C $GEM5_ARGS \
       --output=$OUT_C/program.out \
       -c $BIN_C
   "

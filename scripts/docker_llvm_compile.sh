@@ -45,7 +45,12 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 
 # Basic tool checks
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
-command -v docker  >/dev/null 2>&1 || { echo "docker is required"  >&2; exit 1; }
+# Inside the tutorial image (gem5-alpine on PATH) link natively, else via Docker
+native=0
+command -v gem5-alpine >/dev/null 2>&1 && native=1
+if [[ "$native" -eq 0 ]]; then
+  command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
+fi
 command -v clang   >/dev/null 2>&1 || { echo "clang (host) is required" >&2; exit 1; }
 
 # Inputs
@@ -107,40 +112,23 @@ cat <<INFO
 [host] output bin: $abs_output
 INFO
 
-docker_image="${ALPINE_DOCKER_TAG:-alpine-gem5:latest}"
-echo "[host] docker image: $docker_image"
-
-# Build (compile runtime + driver, then link) inside container
-cat <<'INFO'
-[host] compiling and linking inside container…
-INFO
-
-# When running inside a container with a forwarded Docker socket, volume paths
-# are resolved on the host. Use CINNAMON_HOST_PATH if set.
-host_repo_root="${CINNAMON_HOST_PATH:-$repo_root}"
-
-docker run --rm \
-  -u "$(id -u):$(id -g)" \
-  -v "$host_repo_root":/workspace \
-  -w /workspace \
-  -e BUILD_DIR="$build_rel" \
-  -e DRIVER_SRC="$driver_rel" \
-  -e LLVM_OBJ="$llvm_obj_rel" \
-  -e OUTPUT_BIN="$output_rel" \
-  "$docker_image" /bin/sh -eu -c '
-    BUILD_DIR="/workspace/${BUILD_DIR}"
-    DRIVER_SRC="/workspace/${DRIVER_SRC}"
-    LLVM_OBJ="/workspace/${LLVM_OBJ}"
-    OUTPUT_BIN="/workspace/${OUTPUT_BIN}"
+# Compile runtime + driver, then link. ROOT is the repo root as seen by the
+# shell running this (/workspace in the container, $repo_root natively).
+link_script='
+    BUILD_DIR="${ROOT}/${BUILD_DIR}"
+    DRIVER_SRC="${ROOT}/${DRIVER_SRC}"
+    LLVM_OBJ="${ROOT}/${LLVM_OBJ}"
+    OUTPUT_BIN="${ROOT}/${OUTPUT_BIN}"
+    RT="${ROOT}/runtime/Alpine"
     OUTPUT_DIR="$(dirname "$OUTPUT_BIN")"
     mkdir -p "$OUTPUT_DIR"
 
-    CXXFLAGS="-O3 -std=c++17 -I/workspace/runtime/Alpine -DUSE_CHECKER -ffreestanding -fno-exceptions -fno-rtti -fno-pic"
+    CXXFLAGS="-O3 -std=c++17 -I$RT -DUSE_CHECKER -ffreestanding -fno-exceptions -fno-rtti -fno-pic"
 
-    aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/alpine_runtime.cc   -o "$BUILD_DIR/alpine_runtime.o"
-    aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/aimc_state.cc       -o "$BUILD_DIR/aimc_state.o"
-    aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/memref_rt_min.cc    -o "$BUILD_DIR/memref_rt_min.o"
-    aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/runtime_shims.cc    -o "$BUILD_DIR/runtime_shims.o"
+    aarch64-linux-gnu-g++ $CXXFLAGS -c "$RT/alpine_runtime.cc"   -o "$BUILD_DIR/alpine_runtime.o"
+    aarch64-linux-gnu-g++ $CXXFLAGS -c "$RT/aimc_state.cc"       -o "$BUILD_DIR/aimc_state.o"
+    aarch64-linux-gnu-g++ $CXXFLAGS -c "$RT/memref_rt_min.cc"    -o "$BUILD_DIR/memref_rt_min.o"
+    aarch64-linux-gnu-g++ $CXXFLAGS -c "$RT/runtime_shims.cc"    -o "$BUILD_DIR/runtime_shims.o"
     aarch64-linux-gnu-gcc  -O3 -std=gnu11 -ffreestanding -fno-pic -c "$DRIVER_SRC"   -o "$BUILD_DIR/driver.o"
 
     aarch64-linux-gnu-ld -static -nostdlib -no-pie --no-dynamic-linker \
@@ -152,7 +140,33 @@ docker run --rm \
       "$BUILD_DIR/aimc_state.o" \
       "$BUILD_DIR/runtime_shims.o" \
       "$BUILD_DIR/memref_rt_min.o" \
-      /workspace/runtime/Alpine/crt0.o
-  '
+      "$RT/crt0.o"
+'
+
+if [[ "$native" -eq 1 ]]; then
+  echo "[host] compiling and linking natively…"
+  ROOT="$repo_root" BUILD_DIR="$build_rel" DRIVER_SRC="$driver_rel" \
+    LLVM_OBJ="$llvm_obj_rel" OUTPUT_BIN="$output_rel" \
+    /bin/sh -eu -c "$link_script"
+else
+  docker_image="${ALPINE_DOCKER_TAG:-alpine-gem5:latest}"
+  echo "[host] docker image: $docker_image"
+  echo "[host] compiling and linking inside container…"
+
+  # When running inside a container with a forwarded Docker socket, volume paths
+  # are resolved on the host. Use CINNAMON_HOST_PATH if set.
+  host_repo_root="${CINNAMON_HOST_PATH:-$repo_root}"
+
+  docker run --rm \
+    -u "$(id -u):$(id -g)" \
+    -v "$host_repo_root":/workspace \
+    -w /workspace \
+    -e ROOT=/workspace \
+    -e BUILD_DIR="$build_rel" \
+    -e DRIVER_SRC="$driver_rel" \
+    -e LLVM_OBJ="$llvm_obj_rel" \
+    -e OUTPUT_BIN="$output_rel" \
+    "$docker_image" /bin/sh -eu -c "$link_script"
+fi
 
 echo "Built: $abs_output"

@@ -114,11 +114,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LDFLAGS=-fuse-ld=mold \
     CMAKE_GENERATOR=Ninja
 
-# docker.io removed: not needed (ALPINE comes from stage 1) and unusable on Binder
+# docker.io removed: not needed (ALPINE comes from stage 1) and unusable on Binder.
+# aarch64 cross tools: scripts/docker_*.sh link and run ALPINE binaries natively here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential clang cmake ninja-build mold git wget curl ca-certificates \
     pkg-config libvulkan-dev \
     python3.12 python3.12-dev python3.12-venv python3-pip \
+    g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
  && rm -rf /var/lib/apt/lists/*
 
 # Binder: UID 1000 (ubuntu:24.04 already has user 'ubuntu' with that UID)
@@ -131,7 +133,7 @@ ENV USER=${NB_USER} HOME=/home/${NB_USER}
 COPY --from=alpine /opt/miniconda3/envs/py27 /opt/miniconda3/envs/py27
 COPY --from=alpine /export/lib /opt/alpine/lib
 COPY --from=alpine --chown=${NB_UID} /export/ALPINE ${HOME}/third-party/ALPINE
-RUN printf '#!/usr/bin/env bash\nexport LD_LIBRARY_PATH=/opt/alpine/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\nexec %s "$@"\n' \
+RUN printf '#!/usr/bin/env bash\nexport PYTHONHOME=/opt/miniconda3/envs/py27\nexport LD_LIBRARY_PATH=/opt/alpine/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\nexec %s "$@"\n' \
       "${HOME}/third-party/ALPINE/gem5-X-ALPINE/build/ARM/gem5.opt" > /usr/local/bin/gem5-alpine \
  && chmod +x /usr/local/bin/gem5-alpine
 
@@ -151,3 +153,11 @@ RUN .github/workflows/build-cinnamon.sh
 
 # Jupyter (required by Binder)
 RUN pip install --no-cache-dir notebook jupyterlab
+
+# What env.sh / start-notebook.sh would set: `jupyter` is launched directly here
+# (and by Binder), and the torch-mlir bindings need the LLVM shared libraries.
+# Set last so the toolchain builds above keep using the system clang.
+ENV CINM_ROOT=${HOME} \
+    PATH=${HOME}/third-party/torch-mlir/install/bin:${HOME}/third-party/llvm/build/bin:${HOME}/build/bin:${PATH} \
+    LD_LIBRARY_PATH=${HOME}/third-party/torch-mlir/install/lib:${HOME}/third-party/llvm/build/lib:${HOME}/build/lib \
+    PYTHONPATH=${HOME}/third-party/torch-mlir/install/python_packages/torch_mlir:${HOME}/third-party/torch-mlir/install/python_packages:${HOME}
